@@ -135,7 +135,19 @@ pub fn read_file(
     limit: Option<usize>,
 ) -> io::Result<ReadFileOutput> {
     let absolute_path = normalize_path(path)?;
-    let content = fs::read_to_string(&absolute_path)?;
+    let bytes = fs::read(&absolute_path)?;
+    if is_likely_binary(&bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file appears to be binary",
+        ));
+    }
+    let content = String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file is not valid UTF-8 text",
+        )
+    })?;
     let lines: Vec<&str> = content.lines().collect();
     let start_index = offset.unwrap_or(0).min(lines.len());
     let end_index = limit.map_or(lines.len(), |limit| {
@@ -445,6 +457,10 @@ fn make_patch(original: &str, updated: &str) -> Vec<StructuredPatchHunk> {
     }]
 }
 
+fn is_likely_binary(bytes: &[u8]) -> bool {
+    bytes.contains(&0)
+}
+
 fn normalize_path(path: &str) -> io::Result<PathBuf> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
@@ -546,5 +562,16 @@ mod tests {
         })
         .expect("grep should succeed");
         assert!(grep_output.content.unwrap_or_default().contains("hello"));
+    }
+
+    #[test]
+    fn read_file_rejects_binary_content() {
+        let path = temp_path("binary.bin");
+        std::fs::write(&path, [0_u8, 1, 2, 3, b'\n']).expect("binary fixture should be written");
+
+        let error = read_file(path.to_string_lossy().as_ref(), None, None)
+            .expect_err("read_file should reject binary content");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("binary"));
     }
 }
